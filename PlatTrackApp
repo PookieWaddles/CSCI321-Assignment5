@@ -1,0 +1,369 @@
+import SwiftUI
+import Observation
+import Foundation
+
+// ===============================
+// MARK: - MODELS
+// ===============================
+
+struct Game: Identifiable {
+    let id: UUID
+    var title: String
+    var platform: String
+    var trophyStats: TrophyStats
+    var isPlatinumEarned: Bool
+    var releaseDate: Date
+    var backgroundImage: String?
+}
+
+struct TrophyStats {
+    var bronze: Int
+    var silver: Int
+    var gold: Int
+    var platinum: Int
+}
+
+// ===============================
+// MARK: - API → APP MAPPING
+// ===============================
+
+extension Game {
+    init(from api: GameAPI) {
+        self.id = UUID()
+        self.title = api.name
+        self.platform = "RAWG Game"
+        self.trophyStats = TrophyStats(bronze: 0, silver: 0, gold: 0, platinum: 0)
+        self.isPlatinumEarned = false
+        self.releaseDate = Date()
+        self.backgroundImage = api.backgroundImage
+    }
+}
+
+// ===============================
+// MARK: - VIEWMODEL
+// ===============================
+
+@MainActor
+@Observable
+class GameViewModel {
+
+    var games: [Game] = []
+
+    var isLoading = false
+    var errorMessage: String?
+
+    private let service = APIService()
+
+    func loadGames() async {
+
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            let apiGames = try await service.fetchGames()
+            games = apiGames.map { Game(from: $0) }
+        }
+        catch let error as NetworkError {
+            errorMessage = error.errorDescription
+        }
+        catch {
+            errorMessage = "Unexpected error occurred."
+        }
+
+        isLoading = false
+    }
+
+    func addGame(_ game: Game) {
+        games.append(game)
+    }
+
+    func deleteGame(at offsets: IndexSet) {
+        games.remove(atOffsets: offsets)
+    }
+}
+
+// ===============================
+// MARK: - ROW VIEW
+// ===============================
+
+struct GameRowView: View {
+    let game: Game
+
+    var body: some View {
+        HStack {
+
+            if let urlString = game.backgroundImage,
+               let url = URL(string: urlString) {
+
+                AsyncImage(url: url) { image in
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } placeholder: {
+                    ProgressView()
+                }
+                .frame(width: 60, height: 60)
+                .clipped()
+                .cornerRadius(8)
+
+            } else {
+                Image(systemName: "photo")
+                    .frame(width: 60, height: 60)
+            }
+
+            VStack(alignment: .leading) {
+                Text(game.title)
+                    .font(.headline)
+
+                Text(game.platform)
+                    .font(.subheadline)
+                    .foregroundStyle(.gray)
+            }
+
+            Spacer()
+
+            Image(systemName: game.isPlatinumEarned ? "trophy.fill" : "trophy")
+                .foregroundStyle(.yellow)
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(10)
+    }
+}
+
+// ===============================
+// MARK: - LIST VIEW
+// ===============================
+
+struct ListView: View {
+    @Environment(GameViewModel.self) var viewModel
+
+    @State private var showSheet = false
+    @State private var showAlert = false
+    @State private var deleteIndex: IndexSet?
+
+    var body: some View {
+        NavigationStack {
+            List {
+
+                if viewModel.isLoading {
+                    ProgressView("Loading games...")
+                }
+
+                else if let error = viewModel.errorMessage {
+                    Text(error)
+                        .foregroundStyle(.red)
+                }
+
+                else {
+
+                    ForEach(viewModel.games) { game in
+                        NavigationLink {
+                            DetailView(game: game)
+                        } label: {
+                            GameRowView(game: game)
+                        }
+                    }
+                    .onDelete { indexSet in
+                        deleteIndex = indexSet
+                        showAlert = true
+                    }
+                }
+            }
+            .navigationTitle("My Games")
+            .toolbar {
+                Button {
+                    showSheet = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
+            .sheet(isPresented: $showSheet) {
+                FormView()
+                    .environment(viewModel)
+            }
+            .alert("Delete Game?", isPresented: $showAlert) {
+                Button("Delete", role: .destructive) {
+                    if let deleteIndex {
+                        viewModel.deleteGame(at: deleteIndex)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+        }
+
+        .task {
+            await viewModel.loadGames()
+        }
+
+        .refreshable {
+            await viewModel.loadGames()
+        }
+    }
+}
+
+// ===============================
+// MARK: - IMPROVED DETAIL VIEW
+// ===============================
+
+struct DetailView: View {
+    let game: Game
+
+    var body: some View {
+        ScrollView {
+
+            VStack(spacing: 20) {
+
+                if let urlString = game.backgroundImage,
+                   let url = URL(string: urlString) {
+
+                    AsyncImage(url: url) { image in
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    } placeholder: {
+                        ProgressView()
+                    }
+                    .frame(height: 220)
+                    .clipped()
+                    .cornerRadius(12)
+                }
+
+                Text(game.title)
+                    .font(.largeTitle)
+                    .bold()
+
+                Text("Platform: \(game.platform)")
+                    .foregroundStyle(.gray)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Game Info")
+                        .font(.headline)
+
+                    Text("• Pulled from RAWG API")
+                    Text("• Includes dynamic image loading")
+                    Text("• Extendable with ratings, genres, and description")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .padding()
+        }
+        .navigationTitle(game.title)
+    }
+}
+
+// ===============================
+// MARK: - FORM VIEW
+// ===============================
+
+struct FormView: View {
+    @Environment(GameViewModel.self) var viewModel
+    @Environment(\.dismiss) var dismiss
+
+    @State private var title = ""
+    @State private var platform = "PS5"
+    @State private var releaseDate = Date()
+
+    var body: some View {
+        NavigationStack {
+            Form {
+
+                Section("Game Info") {
+                    TextField("Title", text: $title)
+
+                    Picker("Platform", selection: $platform) {
+                        Text("PS5").tag("PS5")
+                        Text("PS4").tag("PS4")
+                    }
+
+                    DatePicker("Release Date", selection: $releaseDate)
+                }
+
+                Section {
+                    Button("Save") {
+                        let newGame = Game(
+                            id: UUID(),
+                            title: title,
+                            platform: platform,
+                            trophyStats: TrophyStats(bronze: 0, silver: 0, gold: 0, platinum: 0),
+                            isPlatinumEarned: false,
+                            releaseDate: releaseDate,
+                            backgroundImage: nil
+                        )
+
+                        viewModel.addGame(newGame)
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Cancel", role: .cancel) {
+                        dismiss()
+                    }
+                }
+            }
+            .navigationTitle("Add Game")
+        }
+    }
+}
+
+// ===============================
+// MARK: - PROFILE VIEW (FINAL POLISH)
+// ===============================
+
+struct ProfileView: View {
+    @Environment(GameViewModel.self) var viewModel
+
+    var body: some View {
+        VStack(spacing: 20) {
+
+            Image(systemName: "person.circle.fill")
+                .resizable()
+                .frame(width: 100, height: 100)
+
+            Text("Player Profile")
+                .font(.title)
+
+            Text("Total Games: \(viewModel.games.count)")
+                .font(.headline)
+
+            Text("Platinums Earned: \(viewModel.games.filter { $0.isPlatinumEarned }.count)")
+                .font(.subheadline)
+        }
+    }
+}
+
+// ===============================
+// MARK: - CONTENT VIEW
+// ===============================
+
+struct ContentView: View {
+    @State private var viewModel = GameViewModel()
+
+    var body: some View {
+        TabView {
+
+            ListView()
+                .environment(viewModel)
+                .tabItem {
+                    Label("Games", systemImage: "list.bullet")
+                }
+
+            ProfileView()
+                .environment(viewModel)
+                .tabItem {
+                    Label("Profile", systemImage: "person")
+                }
+        }
+    }
+}
+
+// ===============================
+// MARK: - PREVIEW
+// ===============================
+
+#Preview {
+    ContentView()
+}
